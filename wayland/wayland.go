@@ -23,9 +23,9 @@ import (
 	"image"
 	"image/draw"
 
+	"fmt"
 	"strings"
 	"syscall"
-	"fmt"
 )
 
 func init() {
@@ -45,30 +45,31 @@ func init() {
 }
 
 type Window struct {
-	display			*gowl.Display
-	compositor		*gowl.Compositor
-	surface			*gowl.Surface
-	shell			*gowl.Shell
-	shellsurface	*gowl.ShellSurface
-	shm				*gowl.Shm
-	pool			*gowl.ShmPool
-	buffer			*gowl.Buffer
-	seat			*gowl.Seat
-	pointer			*gowl.Pointer
-	ddm				*gowl.DataDeviceManager
-	dd				*gowl.DataDevice
+	display      *gowl.Display
+	compositor   *gowl.Compositor
+	surface      *gowl.Surface
+	shell        *gowl.Shell
+	shellsurface *gowl.ShellSurface
+	shm          *gowl.Shm
+	pool         *gowl.ShmPool
+	buffer       *gowl.Buffer
+	seat         *gowl.Seat
+	pointer      *gowl.Pointer
+	keyboard	 *gowl.Keyboard
+	ddm          *gowl.DataDeviceManager
+	dd           *gowl.DataDevice
 
-	screen			*image.RGBA
-	eventchan		chan interface{}
+	screen    *image.RGBA
+	eventchan chan interface{}
 }
 
 func NewWindow(width, height int) (w *Window, err error) {
 	w = new(Window)
 	w.eventchan = make(chan interface{})
-	go func () {
+	go func() {
 		for _ = range w.eventchan {
 		}
-	} ()
+	}()
 
 	// Create display and connect to wayland server
 	w.display = gowl.NewDisplay()
@@ -78,22 +79,24 @@ func NewWindow(width, height int) (w *Window, err error) {
 	}
 
 	// Allocate other components
-	w.compositor = gowl.NewCompositor()
-	w.surface = gowl.NewSurface()
-	w.shell = gowl.NewShell()
-	w.shellsurface = gowl.NewShellSurface()
+	w.compositor	= gowl.NewCompositor()
+	w.surface		= gowl.NewSurface()
+	w.shell			= gowl.NewShell()
+	w.shellsurface	= gowl.NewShellSurface()
 
-	w.shm = gowl.NewShm()
-	w.pool = gowl.NewShmPool()
-	w.buffer = gowl.NewBuffer()
+	w.shm		= gowl.NewShm()
+	w.pool		= gowl.NewShmPool()
+	w.buffer	= gowl.NewBuffer()
 
-	w.seat = gowl.NewSeat()
-	w.pointer = gowl.NewPointer()
-	w.ddm = gowl.NewDataDeviceManager()
-	w.dd = gowl.NewDataDevice()
+	w.seat		= gowl.NewSeat()
+	w.pointer	= gowl.NewPointer()
+	w.keyboard	= gowl.NewKeyboard()
+	w.ddm		= gowl.NewDataDeviceManager()
+	w.dd		= gowl.NewDataDevice()
 
 	// Listen for global events from display
 	globals := make(chan interface{})
+	w.display.AddGlobalListener(globals)
 	go func() {
 		for event := range globals {
 			global := event.(gowl.DisplayGlobal)
@@ -106,12 +109,13 @@ func NewWindow(width, height int) (w *Window, err error) {
 				w.display.Bind(global.Name, global.Iface, global.Version, w.shell)
 			case "wl_seat":
 				w.display.Bind(global.Name, global.Iface, global.Version, w.seat)
+				w.ddm.GetDataDevice(w.dd, w.seat)
+				w.seat.GetPointer(w.pointer)
 			case "wl_data_device_manager":
 				w.display.Bind(global.Name, global.Iface, global.Version, w.ddm)
 			}
 		}
-	} ()
-	w.display.AddGlobalListener(globals)
+	}()
 
 	// Iterate until we are sync'ed
 	err = w.display.Iterate()
@@ -122,10 +126,10 @@ func NewWindow(width, height int) (w *Window, err error) {
 	waitForSync(w.display)
 
 	// Create memory map
-	w.screen = image.NewRGBA(image.Rect(0,0,width,height))
-	size := w.screen.Stride*w.screen.Rect.Dy()
+	w.screen = image.NewRGBA(image.Rect(0, 0, width, height))
+	size := w.screen.Stride * w.screen.Rect.Dy()
 	fd := gowl.CreateTmp(int64(size))
-	mmap,err := syscall.Mmap(int(fd), 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	mmap, err := syscall.Mmap(int(fd), 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		w = nil
 		return
@@ -145,16 +149,21 @@ func NewWindow(width, height int) (w *Window, err error) {
 	// Make shell surface respond to pings
 	pings := make(chan interface{})
 	w.shellsurface.AddPingListener(pings)
-	go func () {
+	go func() {
 		for p := range pings {
 			ping := p.(gowl.ShellSurfacePing)
 			w.shellsurface.Pong(ping.Serial)
 		}
-	} ()
+	}()
 
-	// Set input region
-	w.ddm.GetDataDevice(w.dd, w.seat)
-	w.seat.GetPointer(w.pointer)
+	go handleEvents(w)
+
+	// Iterate
+	go func () {
+		for {
+			w.display.Iterate()
+		}
+	} ()
 
 	return
 }
@@ -173,14 +182,14 @@ func (w *Window) Size() (int, int) {
 func (w *Window) Show() {
 }
 
-func (w *Window) Screen() (draw.Image) {
+func (w *Window) Screen() draw.Image {
 	return w.screen
 }
 
 func (w *Window) FlushImage(bounds ...image.Rectangle) {
 	w.surface.Attach(w.buffer, 0, 0)
 
-	for _,b := range bounds {
+	for _, b := range bounds {
 		w.surface.Damage(int32(b.Min.X), int32(b.Min.Y), int32(b.Dx()), int32(b.Dy()))
 	}
 
@@ -189,7 +198,7 @@ func (w *Window) FlushImage(bounds ...image.Rectangle) {
 	done := make(chan interface{})
 	cb.AddDoneListener(done)
 	w.surface.Frame(cb)
-	func () {
+	func() {
 		for {
 			select {
 			case <-done:
@@ -198,14 +207,14 @@ func (w *Window) FlushImage(bounds ...image.Rectangle) {
 				w.display.Iterate()
 			}
 		}
-	} ()
+	}()
 }
 
-func (w *Window) EventChan() (<-chan interface{}) {
+func (w *Window) EventChan() <-chan interface{} {
 	return w.eventchan
 }
 
-func (w *Window) Close() (error) {
+func (w *Window) Close() error {
 	return nil
 }
 
@@ -214,7 +223,7 @@ func waitForSync(display *gowl.Display) {
 	done := make(chan interface{})
 	cb.AddDoneListener(done)
 	display.Sync(cb)
-	func () {
+	func() {
 		for {
 			select {
 			case <-done:
@@ -223,5 +232,5 @@ func waitForSync(display *gowl.Display) {
 				display.Iterate()
 			}
 		}
-	} ()
+	}()
 }
