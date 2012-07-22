@@ -23,7 +23,6 @@ import (
 	"image"
 	"image/draw"
 
-	"fmt"
 	"strings"
 	"syscall"
 )
