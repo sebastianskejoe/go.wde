@@ -66,16 +66,13 @@ type Window struct {
 func NewWindow(width, height int) (w *Window, err error) {
 	w = new(Window)
 	w.eventchan = make(chan interface{})
-	go func() {
-		for _ = range w.eventchan {
-		}
-	}()
 
 	// Create display and connect to wayland server
 	w.display = gowl.NewDisplay()
 	err = w.display.Connect()
 	if err != nil {
-		fmt.Println(err)
+		w = nil
+		return
 	}
 
 	// Allocate other components
@@ -96,7 +93,6 @@ func NewWindow(width, height int) (w *Window, err error) {
 
 	// Listen for global events from display
 	globals := make(chan interface{})
-	w.display.AddGlobalListener(globals)
 	go func() {
 		for event := range globals {
 			global := event.(gowl.DisplayGlobal)
@@ -116,6 +112,7 @@ func NewWindow(width, height int) (w *Window, err error) {
 			}
 		}
 	}()
+	w.display.AddGlobalListener(globals)
 
 	// Iterate until we are sync'ed
 	err = w.display.Iterate()
